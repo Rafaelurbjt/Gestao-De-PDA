@@ -1,0 +1,38 @@
+# ===== Dependências (reinstaladas com "npm install") =====
+node_modules/
+
+# ===== Segredos: NUNCA vão para o GitHub =====
+# Senha do banco e JWT_SECRET ficam só no PC. Use o .env.example como modelo.
+.env
+.env.*
+!.env.example
+
+# ===== Arquivos gerados =====
+dist/
+build/
+*.log
+npm-debug.log*
+logs/
+
+# ===== Exportações e dados locais =====
+*.csv
+*.sql.bak
+*.dump
+
+# ===== App do PDA (Expo / React Native) — já preparado para a próxima etapa =====
+.expo/
+.expo-shared/
+*.apk
+*.aab
+*.keystore
+*.jks
+android/
+ios/
+
+# ===== Sistema e editor =====
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/*
+!.vscode/extensions.json
+.idea/
