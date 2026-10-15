@@ -1,0 +1,35 @@
+{
+  "expo": {
+    "name": "PDA J&T",
+    "slug": "pda-app",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "android": {
+      "package": "com.jtexpress.controlepda",
+      "adaptiveIcon": {
+        "backgroundColor": "#D5121E",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      }
+    },
+    "plugins": [
+      "expo-secure-store",
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "usesCleartextTraffic": true
+          }
+        }
+      ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "c4b6ffd4-b9b9-435e-a86e-868576112b23"
+      }
+    }
+  }
+}

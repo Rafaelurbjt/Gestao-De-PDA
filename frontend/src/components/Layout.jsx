@@ -11,7 +11,8 @@ const ABAS = [
   { id: 'historico', nome: 'Histórico' },
 ]
 
-export default function Layout({ lider, aoSair }) {
+export default function 
+Layout({ lider, aoSair }) {
   const [aba, setAba] = useState('checkin')
 
   return (
