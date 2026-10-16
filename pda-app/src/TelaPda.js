@@ -1,8 +1,27 @@
+/**
+ * TelaPda.js
+ *
+ * A tela principal do PDA, a que o colaborador vê no dia a dia.
+ * A cada 3 segundos ela pergunta à API qual é a situação deste aparelho e
+ * mostra uma de quatro telas:
+ *   sem conexão | bloqueado/manutenção | campo de CPF | acesso liberado
+ *
+ * Props:
+ *   config               -> { servidor, token, numeroSerie, pinAdmin } (ver armazenamento.js)
+ *   aoPedirConfiguracao  -> abre a tela de configuração (App.js troca de tela)
+ *
+ * Rotas usadas (ver routes/dispositivo.js):
+ *   GET  /dispositivo/status     -> situação do PDA e quem está com ele
+ *   POST /dispositivo/confirmar  -> colaborador digita o CPF para liberar
+ *   POST /dispositivo/encerrar   -> colaborador devolve o PDA pelo próprio aparelho
+ */
+
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, BackHandler, Keyboard, Pressable, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { chamarApi, formatarCpf } from './api';
 import { cores, estilo } from './estilo';
 
+// Intervalo da consulta à API (3 segundos)
 const CONSULTAR_A_CADA_MS = 3000;
 
 // A tela que o colaborador vê. Ela pergunta à API, a cada 3 s, a situação deste PDA:
@@ -10,23 +29,32 @@ const CONSULTAR_A_CADA_MS = 3000;
 //   bloqueado / manutencao      -> "Equipamento bloqueado"
 //   livre / reservado           -> campo de CPF
 export default function TelaPda({ config, aoPedirConfiguracao }) {
+  // Estado = a memória da tela; quando um valor muda, a tela é redesenhada.
+  // situacao é null até a primeira resposta da API chegar.
   const [situacao, setSituacao] = useState(null); // resposta de /dispositivo/status
   const [semConexao, setSemConexao] = useState(false);
   const [cpf, setCpf] = useState('');
   const [erro, setErro] = useState('');
   const [enviando, setEnviando] = useState(false);
   const [confirmarEncerrar, setConfirmarEncerrar] = useState(false);
+  // useRef guarda um valor que NÃO redesenha a tela quando muda: aqui, a contagem dos toques escondidos na marca
   const toques = useRef({ quantidade: 0, desde: 0 });
+  // Janela do PIN de administrador: aberta ou não, texto digitado e erro
   const [pedindoSenha, setPedindoSenha] = useState(false);
   const [senhaDigitada, setSenhaDigitada] = useState('');
   const [erroSenha, setErroSenha] = useState('');
 
   // Botão "voltar" do Android não fecha o app
   useEffect(() => {
+    // Devolver true = "eu já tratei este botão"; assim o Android não fecha o app.
+    // A função devolvida remove o ouvinte quando a tela sai.
     const assinatura = BackHandler.addEventListener('hardwareBackPress', () => true);
     return () => assinatura.remove();
   }, []);
 
+  // Pergunta à API a situação deste PDA. Se a API recusar o token do aparelho (401),
+  // pede a configuração de novo; qualquer outro erro é tratado como falta de conexão.
+  // useCallback mantém a mesma função entre redesenhos, para não reiniciar o timer abaixo.
   const consultar = useCallback(async () => {
     try {
       const s = await chamarApi(config.servidor, '/dispositivo/status', { token: config.token });
@@ -39,11 +67,14 @@ export default function TelaPda({ config, aoPedirConfiguracao }) {
   }, [config, aoPedirConfiguracao]);
 
   useEffect(() => {
+    // Consulta ao abrir e depois a cada 3 s (o colaborador vê a liberação feita pelo balcão em poucos segundos).
+    // A função devolvida desliga o timer ao sair da tela.
     consultar();
     const timer = setInterval(consultar, CONSULTAR_A_CADA_MS);
     return () => clearInterval(timer);
   }, [consultar]);
 
+  // Botão "Liberar": o colaborador confirma o CPF. A API confere se é o CPF do check-in feito no balcão.
   async function liberar() {
     setErro('');
     if (cpf.replace(/\D/g, '').length !== 11) return setErro('Digite os 11 números do CPF.');
@@ -63,6 +94,7 @@ export default function TelaPda({ config, aoPedirConfiguracao }) {
     }
   }
 
+  // Botão "Sim, encerrar": devolve o PDA pelo próprio aparelho
   async function encerrar() {
     setEnviando(true);
     try {
@@ -80,6 +112,7 @@ export default function TelaPda({ config, aoPedirConfiguracao }) {
   // depois a senha de administrador definida na configuração
   function toqueNaMarca() {
     const agora = Date.now();
+    // .current é onde o useRef guarda o valor. Se passaram mais de 3 s desde o primeiro toque, recomeça a contagem.
     const t = toques.current;
     if (agora - t.desde > 3000) { t.quantidade = 0; t.desde = agora; }
     t.quantidade += 1;
@@ -92,6 +125,7 @@ export default function TelaPda({ config, aoPedirConfiguracao }) {
     }
   }
 
+  // Compara o PIN digitado com o salvo no aparelho (a API não participa disso)
   function conferirSenha() {
     if (senhaDigitada === config.pinAdmin) {
       setPedindoSenha(false);
@@ -102,18 +136,24 @@ export default function TelaPda({ config, aoPedirConfiguracao }) {
     }
   }
 
+  // ?. evita erro enquanto situacao ainda é null (antes da primeira resposta)
   const status = situacao?.status;
 
+  // As telas abaixo são exclusivas: só uma das condições é verdadeira por vez.
+  // "cond && <algo/>" desenha o algo só quando cond é verdadeira.
   return (
     <View style={estilo.tela}>
+      {/* A marca é o botão secreto da configuração: 5 toques seguidos abrem o pedido de PIN */}
       <Pressable onPress={toqueNaMarca}>
         <Text style={estilo.marca}>CONTROLE DE PDAs</Text>
         <Text style={estilo.serie}>{config.numeroSerie}</Text>
       </Pressable>
 
       <View style={estilo.centro}>
+        {/* Primeira consulta ainda sem resposta: círculo de carregamento */}
         {!situacao && !semConexao && <ActivityIndicator size="large" color={cores.vermelho} />}
 
+        {/* Sem conexão: mostra o aviso e continua tentando a cada 3 s; volta sozinho quando a rede voltar */}
         {semConexao && (
           <>
             <Text style={estilo.icone}>📶</Text>
@@ -122,6 +162,7 @@ export default function TelaPda({ config, aoPedirConfiguracao }) {
           </>
         )}
 
+        {/* PDA bloqueado ou em manutenção (definido pelo balcão, aba PDAs) */}
         {!semConexao && (status === 'bloqueado' || status === 'manutencao') && (
           <>
             <Text style={estilo.icone}>🔒</Text>
@@ -132,6 +173,7 @@ export default function TelaPda({ config, aoPedirConfiguracao }) {
           </>
         )}
 
+        {/* PDA livre ou reservado: pede o CPF. formatarCpf formata enquanto digita; limpa o erro a cada tecla */}
         {!semConexao && (status === 'livre' || status === 'reservado') && (
           <>
             <Text style={estilo.titulo}>Digite seu CPF</Text>
@@ -153,6 +195,7 @@ export default function TelaPda({ config, aoPedirConfiguracao }) {
           </>
         )}
 
+        {/* PDA em uso: mostra o nome de quem está com ele e permite encerrar (com confirmação em dois toques) */}
         {!semConexao && status === 'em_uso' && (
           <>
             <View style={{ alignSelf: 'center', backgroundColor: cores.verdeClaro, borderRadius: 60, width: 96, height: 96, alignItems: 'center', justifyContent: 'center', marginBottom: 16 }}>
@@ -168,6 +211,7 @@ export default function TelaPda({ config, aoPedirConfiguracao }) {
               </Text>
             )}
             {!!erro && <Text style={estilo.erro}>{erro}</Text>}
+            {/* Dois toques para encerrar: o primeiro só abre a pergunta, o segundo confirma */}
             {confirmarEncerrar ? (
               <>
                 <Text style={[estilo.sub, { marginTop: 28 }]}>Encerrar o uso e devolver o PDA?</Text>
@@ -186,6 +230,7 @@ export default function TelaPda({ config, aoPedirConfiguracao }) {
           </>
         )}
       </View>
+      {/* Janela do PIN por cima de tudo (estilos sobreposicao/caixa do estilo.js) */}
       {pedindoSenha && (
         <View style={estilo.sobreposicao}>
           <View style={estilo.caixa}>

@@ -1,11 +1,34 @@
+/**
+ * routes/checkins.js
+ *
+ * Rotas do balcão para vincular colaborador e PDA (check-in) e desfazer o
+ * vínculo (check-out). Todas exigem líder logado.
+ *
+ *   GET  /checkins/painel         lista de colaboradores e quem está com PDA
+ *   GET  /checkins/historico      check-ins de um período (padrão: 7 dias)
+ *   POST /checkins                faz o check-in (marca o checkbox)
+ *   POST /checkins/:id/checkout   faz o check-out (desmarca o checkbox)
+ *
+ * Ciclo de um check-in:
+ *   aguardando  -> líder fez o check-in; o colaborador ainda não digitou o CPF
+ *   em_uso      -> colaborador confirmou o CPF no PDA
+ *   finalizado  -> check-out feito depois de ter usado o PDA
+ *   cancelado   -> check-out feito sem o colaborador ter chegado a usar
+ *
+ * Ciclo do PDA: livre -> reservado (check-in) -> em_uso (CPF confirmado) -> livre
+ */
+
 const express = require('express');
 const { pool, transacao } = require('../db');
 const { exigeLider } = require('../middlewares/auth');
 
 const router = express.Router();
+
+// Todas as rotas deste arquivo passam antes pelo middleware de login do líder
 router.use(exigeLider);
 
-// Erro com status HTTP, para sair da transação com uma mensagem clara
+// Cria um erro com status HTTP. Serve para sair da transação com uma mensagem
+// clara: o catch das rotas lê o "status" e responde com ele.
 function falha(status, mensagem) {
   const e = new Error(mensagem);
   e.status = status;
@@ -15,6 +38,10 @@ function falha(status, mensagem) {
 // GET /checkins/painel -> lista com checkbox: todos os colaboradores ativos
 // e, para quem está com PDA, qual é e desde quando
 router.get('/painel', async (req, res) => {
+  // LEFT JOIN: traz o colaborador mesmo sem check-in aberto (k e p ficam null).
+  // k.colaborador_ativo só tem valor enquanto o check-in está aberto (coluna
+  // gerada no banco), então o join pega apenas o check-in atual de cada pessoa.
+  // ORDER BY (k.id IS NULL): quem está com PDA aparece primeiro, depois por nome.
   const [linhas] = await pool.query(
     `SELECT c.id AS colaborador_id, c.nome, c.cpf, c.vinculo, e.nome AS empresa,
             k.id AS checkin_id, k.status AS situacao, k.checkin_em,
@@ -26,20 +53,29 @@ router.get('/painel', async (req, res) => {
       WHERE c.ativo = 1
       ORDER BY (k.id IS NULL), c.nome`
   );
+  // com_pda = true quando existe check-in aberto (o checkbox marcado na tela)
   res.json(linhas.map((l) => ({ ...l, com_pda: l.checkin_id !== null })));
 });
 
 // GET /checkins/historico?de=2026-10-01&ate=2026-10-14&busca=joao
 // Todos os check-ins do período (padrão: últimos 7 dias), do mais recente para o mais antigo
 router.get('/historico', async (req, res) => {
+  // Aceita só datas no formato AAAA-MM-DD; qualquer outra coisa cai no padrão
   const dataValida = (v) => /^\d{4}-\d{2}-\d{2}$/.test(String(v || ''));
   const hoje = new Date();
+  // Hoje conta como o 1º dia, então "7 dias" = 6 dias atrás até hoje
   const seteDiasAtras = new Date(hoje.getTime() - 6 * 24 * 60 * 60 * 1000);
   const iso = (d) => d.toLocaleDateString('sv-SE'); // AAAA-MM-DD no fuso do servidor
   const de = dataValida(req.query.de) ? req.query.de : iso(seteDiasAtras);
   const ate = dataValida(req.query.ate) ? req.query.ate : iso(hoje);
   const busca = String(req.query.busca || '').trim();
 
+  // minutos_uso: do momento em que o CPF foi confirmado até o check-out.
+  // Os JOINs de líder usam a mesma tabela duas vezes com apelidos diferentes
+  // (li = quem fez o check-in, lo = quem fez o check-out; esse pode ser vazio).
+  // A data final soma 1 dia e usa "<" para incluir o dia inteiro de "ate".
+  // Busca vazia ('' = '') desliga o filtro; com texto, procura em nome ou série.
+  // Os "?" mantêm os valores separados do SQL (protege contra injeção).
   const [linhas] = await pool.query(
     `SELECT k.id, k.status, k.checkin_em, k.confirmado_em, k.checkout_em,
             k.cpf_errado_qtd, k.observacao,
@@ -71,6 +107,8 @@ router.post('/', async (req, res) => {
   }
 
   try {
+    // Tudo dentro da transação acontece junto ou não acontece: se qualquer
+    // passo falhar, o banco desfaz os anteriores.
     const resultado = await transacao(async (conn) => {
       // FOR UPDATE "tranca" a linha do PDA até o fim da transação:
       // se dois líderes clicarem ao mesmo tempo, o segundo espera e vê o PDA já reservado
@@ -87,6 +125,7 @@ router.post('/', async (req, res) => {
       );
       if (!colab) throw falha(404, 'Colaborador não encontrado.');
 
+      // Cria o check-in (nasce como "aguardando") e reserva o PDA
       const [r] = await conn.query(
         'INSERT INTO checkins (pda_id, colaborador_id, lider_checkin_id) VALUES (?, ?, ?)',
         [pda.id, colab.id, req.lider.id]
@@ -97,7 +136,10 @@ router.post('/', async (req, res) => {
     });
     res.status(201).json(resultado);
   } catch (erro) {
+    // Erros criados por falha(): responde com o status e a mensagem escolhidos
     if (erro.status) return res.status(erro.status).json({ erro: erro.message });
+    // Rede de segurança: as regras também estão no banco (índices UNIQUE).
+    // Se passarem pela checagem acima, o banco recusa e traduzimos o erro.
     // Trava do banco: a pessoa já tem um check-in aberto
     if (erro.code === 'ER_DUP_ENTRY' && erro.message.includes('uq_colab_ativo')) {
       return res.status(409).json({ erro: 'Este colaborador já está com um PDA. Faça o check-out antes.' });
@@ -105,6 +147,7 @@ router.post('/', async (req, res) => {
     if (erro.code === 'ER_DUP_ENTRY' && erro.message.includes('uq_pda_ativo')) {
       return res.status(409).json({ erro: 'Este PDA já está com outra pessoa.' });
     }
+    // Qualquer outro erro vai para o tratador geral do server.js (responde 500)
     throw erro;
   }
 });
@@ -112,10 +155,13 @@ router.post('/', async (req, res) => {
 // POST /checkins/:id/checkout { "observacao"?: "tela trincada" } -> desmarcar o checkbox
 router.post('/:id/checkout', async (req, res) => {
   const checkinId = Number(req.params.id);
+  // Observação opcional, limitada a 255 caracteres; vazia vira null
   const observacao = String(req.body?.observacao || '').trim().slice(0, 255) || null;
 
   try {
     const resultado = await transacao(async (conn) => {
+      // Só encerra check-in que ainda está aberto; FOR UPDATE evita dois
+      // check-outs ao mesmo tempo no mesmo registro
       const [[k]] = await conn.query(
         `SELECT id, pda_id, status FROM checkins
           WHERE id = ? AND status IN ('aguardando','em_uso') FOR UPDATE`,
